@@ -1,0 +1,8 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 21
+names: ['apple', 'banana', 'beef', 'cabbage', 'carrot', 'chicken', 'corn', 'cucumber', 'eggplant', 'eggs', 'grape', 'kiwi', 'lemon', 'mango', 'orange', 'pineapple', 'pork', 'potato', 'sweetpotato', 'tomato', 'watermelon']
+
+mosaic: 1.0
