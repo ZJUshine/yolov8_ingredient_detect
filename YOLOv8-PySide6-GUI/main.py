@@ -23,6 +23,8 @@ import torch
 import sys
 import cv2
 import os
+from torchvision.ops import box_iou
+from collections import deque
 
 
 class YoloPredictor(BasePredictor, QObject):
@@ -38,6 +40,8 @@ class YoloPredictor(BasePredictor, QObject):
     def __init__(self, cfg=DEFAULT_CFG, overrides=None): 
         super(YoloPredictor, self).__init__() 
         QObject.__init__(self)
+
+        self.frame_buffer = deque(maxlen=5)  # Buffer to store the last 5 frames' results
 
         self.args = get_cfg(cfg, overrides)
         project = self.args.project or Path(SETTINGS['runs_dir']) / self.args.task
@@ -76,6 +80,51 @@ class YoloPredictor(BasePredictor, QObject):
         self.callbacks = defaultdict(list, callbacks.default_callbacks)  # add callbacks
         callbacks.add_integration_callbacks(self)
 
+
+    def fuse_frame_results(self, current_results):
+        """
+        Fuse current frame's results with results in the buffer.
+        """
+        if not self.frame_buffer:
+            return current_results
+
+        fused_results = []
+        for current_result in current_results:
+            if isinstance(current_result, torch.Tensor) and current_result.size(0) > 0:
+                # 创建一个新的张量来存储融合后的框
+                fused_result = current_result.clone()
+
+                for i in range(current_result.size(0)):
+                    # 获取当前框
+                    current_box = current_result[i, :4].unsqueeze(0)
+
+                    # 用于累加匹配框和计数匹配次数
+                    sum_boxes = torch.zeros_like(current_box)
+                    count_matches = 0
+
+                    # 遍历缓冲区中的先前结果
+                    for previous_result in self.frame_buffer:
+                        if isinstance(previous_result, torch.Tensor) and previous_result.size(0) > 0:
+                            # 计算IoU并找到最佳匹配框
+                            iou_scores = box_iou(current_box, previous_result[:, :4])
+                            best_match_idx = iou_scores.argmax(dim=1)
+                            high_iou = iou_scores.max() > 0.5
+
+                            if high_iou:
+                                sum_boxes += previous_result[best_match_idx, :4]
+                                count_matches += 1
+
+                    # 计算平均框坐标
+                    if count_matches > 0:
+                        fused_result[i, :4] = sum_boxes / count_matches
+
+                fused_results.append(fused_result)
+            else:
+                fused_results.append(current_result)
+
+        return fused_results
+
+    
     # main for detect
     @smart_inference_mode()
     def run(self):
@@ -231,6 +280,13 @@ class YoloPredictor(BasePredictor, QObject):
                                         agnostic=self.args.agnostic_nms,
                                         max_det=self.args.max_det,
                                         classes=self.args.classes)
+        
+        print("nms preds:", preds)
+        # Update the frame buffer with current results
+        self.frame_buffer.append(preds)
+        print("origin preds:", preds)
+        preds = self.fuse_frame_results(preds)
+        print("fused preds:", preds)
 
         results = []
         for i, pred in enumerate(preds):
